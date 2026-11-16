@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Seatscape · 3D Seat Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap">
+<style>
+/* Layout: full-bleed 3D auditorium; HUD floats over it — show info top-left, ticket panel right, camera dock bottom-left. */
+:root {
+  --ink: #f3ead8;          /* warm parchment text */
+  --muted: #a99f92;
+  --glass: rgba(16, 12, 20, 0.78);
+  --glass-line: rgba(242, 169, 59, 0.18);
+  --saffron: #f2a93b;      /* selected seats + primary action */
+  --saffron-ink: #2a1600;
+  --seat: #3b7a2a;
+  --seat-blue: #3a64c0;
+  --seat-off: #6a6870;
+  --danger: #ff6b5b;
+  --font-display: "Cinzel", "Trajan Pro", Georgia, serif;
+  --font-body: "DM Sans", "Segoe UI", system-ui, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: #07060a; color: var(--ink); font-family: var(--font-body); font-size: 14px; overflow: hidden; }
+#stage { position: fixed; inset: 0; background: #000; }
+#stage .layer { position: absolute; inset: 0; }
+#stage .css { z-index: 0; pointer-events: none; }
+#stage .gl { z-index: 1; touch-action: none; cursor: grab; }
+#stage .gl.dragging { cursor: grabbing; }
+#stage .gl.pointing { cursor: pointer; }
+
+.hud { position: fixed; z-index: 5; }
+.glass { background: var(--glass); backdrop-filter: blur(14px) saturate(1.2); -webkit-backdrop-filter: blur(14px) saturate(1.2); border: 1px solid var(--glass-line); border-radius: 14px; }
+
+/* Show info */
+.show { top: max(16px, env(safe-area-inset-top)); left: max(16px, env(safe-area-inset-left)); padding: 12px 16px; display: grid; gap: 4px; max-width: min(420px, calc(100% - 32px)); }
+.show h1 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 22px; letter-spacing: 0.06em; text-wrap: balance; }
+.show .meta { color: var(--muted); font-size: 13px; }
+.live { display: inline-flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--saffron); }
+.live::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #ff4a3d; box-shadow: 0 0 0 0 rgba(255,74,61,.6); animation: pulse 1.8s infinite; }
+@keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(255,74,61,0); } 100% { box-shadow: 0 0 0 0 rgba(255,74,61,0); } }
+
+/* Ticket panel */
+.panel { top: max(16px, env(safe-area-inset-top)); right: max(16px, env(safe-area-inset-right)); width: 320px; max-height: calc(100% - 32px); overflow: auto; display: flex; flex-direction: column; }
+.panel > section { padding: 16px 18px; border-bottom: 1px solid rgba(255,255,255,0.07); }
+.panel > section:last-child { border-bottom: 0; }
+.panel h2 { margin: 0; font-family: var(--font-display); font-size: 18px; letter-spacing: 0.05em; text-align: center; }
+.empty { text-align: center; font-size: 16px; line-height: 1.45; padding-block: 18px; color: var(--ink); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 2px; background: rgba(242,169,59,0.14); border: 1px solid rgba(242,169,59,0.45); color: var(--ink); border-radius: 999px; padding: 3px 4px 3px 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.chip button { background: none; border: 0; color: var(--muted); width: 26px; height: 26px; border-radius: 50%; cursor: pointer; font-size: 14px; display: grid; place-items: center; }
+.chip button:hover, .chip button:focus-visible { color: var(--ink); background: rgba(255,255,255,0.1); outline: none; }
+.rows { display: grid; gap: 6px; margin-top: 14px; font-variant-numeric: tabular-nums; }
+.rows div { display: flex; justify-content: space-between; color: var(--muted); }
+.rows .total { color: var(--ink); font-weight: 700; font-size: 16px; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,0.14); }
+.hold { margin-top: 12px; font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
+.hold b { color: var(--saffron); font-variant-numeric: tabular-nums; font-size: 14px; }
+.hold.warn b { color: var(--danger); }
+.actions { display: grid; gap: 10px; }
+.btn { appearance: none; border: 0; border-radius: 999px; padding: 13px 18px; font: 700 15px var(--font-body); cursor: pointer; transition: transform .15s, background .2s, opacity .2s; }
+.btn:focus-visible { outline: 2px solid var(--saffron); outline-offset: 3px; }
+.btn.primary { background: var(--saffron); color: var(--saffron-ink); }
+.btn.primary:hover:not(:disabled) { transform: translateY(-1px); background: #ffbb55; }
+.btn.secondary { background: rgba(255,255,255,0.1); color: var(--ink); }
+.btn.secondary:hover:not(:disabled) { background: rgba(255,255,255,0.16); }
+.btn:disabled { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.35); cursor: not-allowed; }
+.note { font-size: 12px; line-height: 1.5; color: var(--muted); margin: 0; }
+.legend { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
+.legend li { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.sw { width: 22px; height: 18px; border-radius: 5px 5px 3px 3px; flex: none; box-shadow: inset 0 -5px 0 rgba(0,0,0,.25); }
+.sw.avail { background: var(--seat); } .sw.sel { background: var(--saffron); } .sw.off { background: var(--seat-off); }
+.sw.blue { background: var(--seat-blue); display: grid; place-items: center; font-size: 12px; color: #fff; box-shadow: none; }
+.legend-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.legend-head h3 { margin: 0; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+
+/* Camera dock */
+.dock { left: max(16px, env(safe-area-inset-left)); bottom: max(16px, env(safe-area-inset-bottom)); padding: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; max-width: calc(100% - 32px - 340px); }
+.dock .sep { width: 1px; align-self: stretch; background: rgba(255,255,255,0.12); margin: 2px 4px; }
+.tb { appearance: none; border: 1px solid transparent; background: rgba(255,255,255,0.06); color: var(--ink); border-radius: 10px; padding: 8px 12px; font: 500 13px var(--font-body); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.tb:hover { background: rgba(255,255,255,0.13); }
+.tb:focus-visible { outline: 2px solid var(--saffron); outline-offset: 1px; }
+.tb.on { border-color: rgba(242,169,59,0.6); background: rgba(242,169,59,0.16); }
+.tb.round { width: 36px; height: 36px; padding: 0; justify-content: center; border-radius: 50%; font-size: 18px; }
+.tb.sound.on { background: var(--saffron); color: var(--saffron-ink); }
+
+.hint { left: 50%; bottom: 84px; transform: translateX(-50%); padding: 10px 16px; font-size: 13px; color: var(--ink); white-space: nowrap; transition: opacity .6s; pointer-events: none; }
+.hint.gone { opacity: 0; }
+.tip { pointer-events: none; padding: 7px 11px; font-size: 13px; border-radius: 10px; transform: translate(14px, 14px); white-space: nowrap; }
+.tip b { font-variant-numeric: tabular-nums; }
+.tip small { display: block; color: var(--muted); font-size: 11px; }
+.toast { left: 50%; top: max(16px, env(safe-area-inset-top)); transform: translate(-50%, -8px); padding: 10px 16px; opacity: 0; transition: opacity .3s, transform .3s; pointer-events: none; }
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* Modals */
+.scrim { position: fixed; inset: 0; z-index: 20; background: rgba(4,3,6,0.6); display: grid; place-items: center; padding: 16px; }
+.modal { width: min(420px, 100%); max-height: calc(100% - 32px); overflow: auto; padding: 22px; display: grid; gap: 16px; }
+.modal h2 { margin: 0; font-family: var(--font-display); font-size: 22px; letter-spacing: .05em; }
+.snack { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.07); }
+.snack small { color: var(--muted); grid-column: 1; }
+.qty { grid-row: 1 / span 2; grid-column: 2; display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+.qty button { width: 30px; height: 30px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.18); background: transparent; color: var(--ink); font-size: 16px; cursor: pointer; }
+.qty button:hover { background: rgba(255,255,255,0.1); }
+.stub { border: 1px dashed rgba(242,169,59,0.5); border-radius: 12px; padding: 16px; display: grid; gap: 8px; background: rgba(242,169,59,0.06); }
+.stub div { display: flex; justify-content: space-between; gap: 12px; }
+.stub span { color: var(--muted); }
+.stub b { text-align: right; font-variant-numeric: tabular-nums; }
+.code { font-family: ui-monospace, Consolas, monospace; letter-spacing: .2em; font-size: 18px; text-align: center; color: var(--saffron); }
+
+#legendBox[hidden] { display: none !important; }
+[hidden] { display: none !important; }
+
+@media (max-width: 760px) {
+  .show { padding: 10px 12px; } .show h1 { font-size: 17px; } .show .meta { font-size: 12px; }
+  .panel { top: auto; bottom: 0; right: 0; left: 0; width: auto; max-height: 42%; border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); }
+  .panel > section { padding: 12px 16px; }
+  .panel .info-sec { display: none; }
+  .dock { top: calc(max(16px, env(safe-area-inset-top)) + 78px); bottom: auto; max-width: calc(100% - 32px); }
+  .dock .label { display: none; }
+  .hint { bottom: calc(42% + 14px); font-size: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { .live::before { animation: none; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="stage"></div>
+
+<header class="hud glass show">
+  <span class="live">Now playing on screen</span>
+  <h1>RAMAYANA</h1>
+  <div class="meta">Official Trailer · Auditorium 3 · Tonight 7:30 PM · Reserved seating</div>
+  <div class="meta" style="font-size:11px">Seatscape 3D seat-selection demo · sample showtime, no real tickets · Vamshi, (945) 333-0543</div>
+</header>
+
+<aside class="hud glass panel" aria-label="Tickets">
+  <section><h2>Tickets $8.75</h2></section>
+  <section id="ticketBody"></section>
+  <section class="actions">
+    <button class="btn primary" id="buyBtn" disabled>Buy Now</button>
+    <button class="btn secondary" id="snackBtn" disabled>Pre-Order Snacks</button>
+  </section>
+  <section>
+    <div class="legend-head"><h3>Seat legend</h3><button class="tb" id="legendToggle" aria-expanded="true">Hide</button></div>
+    <ul class="legend" id="legendBox">
+      <li><span class="sw avail"></span>Available seat</li>
+      <li><span class="sw sel"></span>Selected seat</li>
+      <li><span class="sw off"></span>Unavailable</li>
+      <li><span class="sw blue">♿</span>Wheelchair space (no seat)</li>
+      <li><span class="sw blue"></span>Companion seat</li>
+    </ul>
+  </section>
+  <section class="info-sec">
+    <p class="note"><b style="color:var(--ink)">Reserved seating.</b> Seats are held for five minutes and then released if not purchased. Reserved seating ensures your seats for the showtime you have chosen.</p>
+  </section>
+</aside>
+
+<nav class="hud glass dock" aria-label="Camera">
+  <button class="tb" data-view="entrance" id="vEntrance">🚪 <span class="label">Entrance</span></button>
+  <button class="tb" data-view="overview" id="vOverview">🎥 <span class="label">Overview</span></button>
+  <button class="tb" data-view="stage" id="vStage">🎭 <span class="label">From the screen</span></button>
+  <button class="tb" id="vSit" disabled>💺 <span class="label" id="sitLabel">Sit in your seat</span></button>
+  <span class="sep"></span>
+  <button class="tb round" id="zoomOut" aria-label="Zoom out">−</button>
+  <button class="tb round" id="zoomIn" aria-label="Zoom in">+</button>
+  <button class="tb round" id="spin" aria-label="Look around 360°" title="Look around 360°">⟳</button>
+  <span class="sep"></span>
+  <button class="tb sound" id="soundBtn">🔇 <span class="label">Unmute trailer</span></button>
+</nav>
+
+<div class="hud glass hint" id="hint">Drag to look around 360° · Click a seat to select · Double-click to sit in it</div>
+<div class="hud glass tip" id="tip" hidden></div>
+<div class="hud glass toast" id="toast"></div>
+
+<div class="scrim" id="snackModal" hidden>
+  <div class="glass modal" role="dialog" aria-modal="true" aria-labelledby="snackTitle">
+    <h2 id="snackTitle">Pre-Order Snacks</h2>
+    <p class="note">Picked up at the concession stand, ready when you arrive.</p>
+    <div id="snackList"></div>
+    <button class="btn primary" id="snackDone">Add to order</button>
+  </div>
+</div>
+
+<div class="scrim" id="buyModal" hidden>
+  <div class="glass modal" role="dialog" aria-modal="true" aria-labelledby="buyTitle">
+    <h2 id="buyTitle">You're booked</h2>
+    <div class="stub" id="stub"></div>
+    <div class="code" id="bookCode"></div>
+    <p class="note">This is a Seatscape demo, so no payment was taken and no real ticket was issued. In a theater's live checkout, this is where the real confirmation would appear. Your seats are now shown as taken.</p>
+    <button class="btn primary" id="buyDone">Back to the auditorium</button>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
+
+const VIDEO_ID = 'Wo3__JUisj8';
+const VIDEO_START = 4;
+const PRICE = 8.75;
+const HOLD_MS = 5 * 60 * 1000;
+const MAX_SEATS = 10;
+
+/* ---------- Renderers ---------- */
+const stage = document.getElementById('stage');
+const W = () => stage.clientWidth, H = () => stage.clientHeight;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(62, W() / H(), 1, 9000);
+
+const cssRenderer = new CSS3DRenderer();
+cssRenderer.setSize(W(), H());
+cssRenderer.domElement.classList.add('layer', 'css');
+stage.appendChild(cssRenderer.domElement);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(W(), H());
+renderer.setClearColor(0x000000, 0);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+renderer.domElement.classList.add('layer', 'gl');
+stage.appendChild(renderer.domElement);
+
+RectAreaLightUniformsLib.init();
+
+/* ---------- Room dimensions (1 unit ≈ 1 cm) ---------- */
+const ROOM = { x: 800, front: -1060, back: 660, ceil: 1150 };
+const SCREEN = { w: 1200, h: 675, x: 0, y: 580, z: -1040 };
+const COL = 62;
+const cx = c => (c - 9.5) * COL;
+
+/* ---------- Textures ---------- */
+function canvasTex(w, h, draw, repeat = false) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  if (repeat) t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+const carpetTex = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#1b1222'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++) {
+    const x = i * 32 + 16, y = j * 32 + 16;
+    g.strokeStyle = (i + j) % 2 ? '#2c1c38' : '#3a1a24'; g.lineWidth = 3;
+    g.beginPath(); g.moveTo(x, y - 12); g.lineTo(x + 12, y); g.lineTo(x, y + 12); g.lineTo(x - 12, y); g.closePath(); g.stroke();
+    g.fillStyle = '#5a3c1c'; g.fillRect(x - 1.5, y - 1.5, 3, 3);
+  }
+}, true);
+const wcTex = canvasTex(128, 128, (g) => {
+  g.fillStyle = '#ffffff'; g.font = '92px "Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols 2", sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('♿', 64, 70);
+});
+const exitTex = canvasTex(256, 96, (g, w, h) => {
+  g.fillStyle = '#0d3b1a'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#5dff8a'; g.font = '700 64px Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('EXIT', w / 2, h / 2 + 3);
+});
+function labelTex(text) {
+  return canvasTex(128, 64, (g, w, h) => {
+    g.fillStyle = '#f4ead6'; g.font = '700 38px Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(text, w / 2, h / 2 + 2);
+  });
+}
+
+/* ---------- Materials ---------- */
+const M = {
+  wall: new THREE.MeshStandardMaterial({ color: 0x17121b, roughness: 1 }),
+  panelA: new THREE.MeshStandardMaterial({ color: 0x3b1219, roughness: 0.95 }),
+  panelB: new THREE.MeshStandardMaterial({ color: 0x221720, roughness: 0.95 }),
+  riser: new THREE.MeshStandardMaterial({ color: 0x120e15, roughness: 0.9 }),
+  carpet: new THREE.MeshStandardMaterial({ map: carpetTex, roughness: 1 }),
+  frame: new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 1 }),
+  curtain: new THREE.MeshStandardMaterial({ color: 0x5c0c16, roughness: 0.85, side: THREE.DoubleSide }),
+  seatDark: new THREE.MeshStandardMaterial({ color: 0x1a1a1f, roughness: 0.6, metalness: 0.2 }),
+  brass: new THREE.MeshStandardMaterial({ color: 0xb08a4a, roughness: 0.35, metalness: 0.8 }),
+  glass: new THREE.MeshStandardMaterial({ color: 0x9fb4d8, roughness: 0.1, transparent: true, opacity: 0.12 }),
+  stepLight: new THREE.MeshBasicMaterial({ color: 0xffb35c }),
+  sconce: new THREE.MeshBasicMaterial({ color: 0xffc98a }),
+  exit: new THREE.MeshBasicMaterial({ map: exitTex }),
+  wcIcon: new THREE.MeshBasicMaterial({ map: wcTex, transparent: true }),
+  marker: new THREE.MeshStandardMaterial({ color: 0xf2a93b, emissive: 0xf2a93b, emissiveIntensity: 1.4, roughness: 0.3 }),
+};
+
+function box(w, h, d, mat, x, y, z) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z); scene.add(m); return m;
+}
+function carpetPlane(w, d, x, y, z) {
+  const geo = new THREE.PlaneGeometry(w, d);
+  const uv = geo.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * w / 240, uv.getY(i) * d / 240);
+  geo.rotateX(-Math.PI / 2);
+  const m = new THREE.Mesh(geo, M.carpet); m.position.set(x, y, z); scene.add(m); return m;
+}
+
+/* ---------- Room shell ---------- */
+const roomLen = ROOM.back - ROOM.front, roomMidZ = (ROOM.back + ROOM.front) / 2;
+carpetPlane(ROOM.x * 2, roomLen, 0, 0, roomMidZ);
+box(20, ROOM.ceil, roomLen, M.wall, -ROOM.x - 10, ROOM.ceil / 2, roomMidZ);
+box(20, ROOM.ceil, roomLen, M.wall, ROOM.x + 10, ROOM.ceil / 2, roomMidZ);
+box(ROOM.x * 2 + 40, 20, roomLen, M.wall, 0, ROOM.ceil + 10, roomMidZ);
+box(ROOM.x * 2 + 40, ROOM.ceil, 20, M.wall, 0, ROOM.ceil / 2, ROOM.front - 10);
+box(ROOM.x * 2 + 40, ROOM.ceil, 20, M.wall, 0, ROOM.ceil / 2, ROOM.back + 10);
+
+// Acoustic fabric panels along side walls
+for (let z = -900, i = 0; z < 600; z += 150, i++) {
+  for (const s of [-1, 1]) box(8, 620, 136, i % 2 ? M.panelB : M.panelA, s * (ROOM.x - 4), 560, z);
+}
+// Sconces with warm pools of light
+for (const z of [-650, -150, 350]) for (const s of [-1, 1]) {
+  box(10, 70, 24, M.sconce, s * (ROOM.x - 10), 720, z);
+  const l = new THREE.PointLight(0xffa860, 0.55, 520, 0);
+  l.position.set(s * (ROOM.x - 60), 720, z); scene.add(l);
+}
+// Stage + screen masking frame
+box(1500, 50, 120, M.riser, 0, 25, ROOM.front + 60);
+const fT = 40;
+box(SCREEN.w + fT * 2, fT, 10, M.frame, 0, SCREEN.y + SCREEN.h / 2 + fT / 2, SCREEN.z - 2);
+box(SCREEN.w + fT * 2, fT, 10, M.frame, 0, SCREEN.y - SCREEN.h / 2 - fT / 2, SCREEN.z - 2);
+box(fT, SCREEN.h, 10, M.frame, -SCREEN.w / 2 - fT / 2, SCREEN.y, SCREEN.z - 2);
+box(fT, SCREEN.h, 10, M.frame, SCREEN.w / 2 + fT / 2, SCREEN.y, SCREEN.z - 2);
+
+// Velvet curtains either side of the screen
+for (const s of [-1, 1]) {
+  const geo = new THREE.PlaneGeometry(180, 1000, 48, 1);
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setZ(i, Math.sin(p.getX(i) * 0.12) * 9 + Math.sin(p.getX(i) * 0.031) * 6);
+  geo.computeVertexNormals();
+  const c = new THREE.Mesh(geo, M.curtain);
+  c.position.set(s * (SCREEN.w / 2 + fT + 92), 550, ROOM.front + 18); scene.add(c);
+}
+// Exit signs
+for (const [x, y, z, ry] of [[-ROOM.x + 2, 980, -900, Math.PI / 2], [ROOM.x - 2, 980, -900, -Math.PI / 2], [-520, 920, ROOM.back - 2, Math.PI], [520, 920, ROOM.back - 2, Math.PI]]) {
+  const s = new THREE.Mesh(new THREE.PlaneGeometry(64, 24), M.exit);
+  s.position.set(x, y, z); s.rotation.y = ry; scene.add(s);
+}
+// Entrance doors at back
+for (const s of [-1, 1]) box(140, 240, 4, M.frame, s * 520, 300 + 120, ROOM.back - 1);
+
+// Star-field ceiling
+{
+  const pts = [];
+  for (let i = 0; i < 700; i++) pts.push((Math.random() * 2 - 1) * (ROOM.x - 30), ROOM.ceil - 2, ROOM.front + 80 + Math.random() * (roomLen - 120));
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xffe6b8, size: 3.2, sizeAttenuation: true })));
+}
+
+/* ---------- Stadium tiers ---------- */
+// [floor height, zFront, zBack]
+const TIERS = [
+  [28, -365, -255], [56, -255, -145], [120, -130, 55], [170, 55, 165], [220, 165, 275], [270, 275, 385], [300, 385, ROOM.back],
+];
+TIERS.forEach(([y, z0, z1], i) => {
+  const d = z1 - z0;
+  box(ROOM.x * 2, y, d, M.riser, 0, y / 2, (z0 + z1) / 2);
+  carpetPlane(ROOM.x * 2, d, 0, y + 0.6, (z0 + z1) / 2);
+  for (const s of [-1, 1]) for (const k of [0, 1, 2]) box(14, 2, 3, M.stepLight, s * (690 + k * 34), y - 4, z0 - 1.6);
+});
+// Gap between C and D tiers stays at C height
+box(ROOM.x * 2, 56, 15, M.riser, 0, 28, -137.5);
+carpetPlane(ROOM.x * 2, 15, 0, 56.6, -137.5);
+// Cross-aisle railing in front of row D
+box(1260, 90, 3, M.glass, 0, 120 + 45, -124);
+box(1260, 6, 8, M.brass, 0, 120 + 92, -124);
+for (let x = -630; x <= 630; x += 210) box(5, 92, 5, M.brass, x, 120 + 46, -124);
+
+/* ---------- Lights ---------- */
+scene.add(new THREE.AmbientLight(0x6a6a90, 0.32));
+scene.add(new THREE.HemisphereLight(0x7d88b8, 0x24121a, 0.35));
+const screenLight = new THREE.RectAreaLight(0xbfd2ff, 5.5, SCREEN.w, SCREEN.h);
+screenLight.position.set(SCREEN.x, SCREEN.y, SCREEN.z + 4);
+screenLight.lookAt(0, SCREEN.y, 0);
+scene.add(screenLight);
+const screenDir = new THREE.DirectionalLight(0xc8d6ff, 0.35);
+screenDir.position.set(0, SCREEN.y, SCREEN.z); screenDir.target.position.set(0, 120, 300);
+scene.add(screenDir, screenDir.target);
+
+/* ---------- Movie screen: YouTube iframe in CSS3D + "hole" in WebGL ---------- */
+const screenEl = document.createElement('div');
+Object.assign(screenEl.style, { width: SCREEN.w + 'px', height: SCREEN.h + 'px', background: '#000' });
+const iframe = document.createElement('iframe');
+const params = new URLSearchParams({
+  autoplay: 1, mute: 1, loop: 1, playlist: VIDEO_ID, start: VIDEO_START, controls: 0, rel: 0,
+  playsinline: 1, modestbranding: 1, iv_load_policy: 3, disablekb: 1, enablejsapi: 1, origin: location.origin,
+});
+iframe.src = `https://www.youtube.com/embed/${VIDEO_ID}?${params}`;
+iframe.allow = 'autoplay; encrypted-media; picture-in-picture';
+iframe.title = 'Ramayana trailer';
+Object.assign(iframe.style, { width: '100%', height: '100%', border: '0', display: 'block' });
+screenEl.appendChild(iframe);
+const screenObj = new CSS3DObject(screenEl);
+screenObj.position.set(SCREEN.x, SCREEN.y, SCREEN.z);
+scene.add(screenObj);
+// Transparent "hole" so the iframe beneath shows through, with correct occlusion
+const hole = new THREE.Mesh(new THREE.PlaneGeometry(SCREEN.w, SCREEN.h),
+  new THREE.MeshBasicMaterial({ color: 0x000000, opacity: 0, blending: THREE.NoBlending, side: THREE.DoubleSide }));
+hole.position.copy(screenObj.position);
+scene.add(hole);
+
+function ytCommand(func, args = []) {
+  iframe.contentWindow?.postMessage(JSON.stringify({ event: 'command', func, args }), '*');
+}
+iframe.addEventListener('load', () => { setTimeout(() => ytCommand('playVideo'), 800); });
+
+/* ---------- Seats ---------- */
+const GEO = {
+  base: new THREE.BoxGeometry(40, 34, 36),
+  cushion: new RoundedBoxGeometry(50, 14, 48, 2, 5),
+  back: new RoundedBoxGeometry(52, 64, 11, 2, 4),
+  arm: new RoundedBoxGeometry(7, 8, 46, 1, 3),
+  armPost: new THREE.BoxGeometry(5, 34, 6),
+  label: new THREE.PlaneGeometry(26, 13),
+  pad: new RoundedBoxGeometry(58, 4, 84, 1, 2),
+  icon: new THREE.PlaneGeometry(40, 40),
+  marker: new THREE.OctahedronGeometry(9),
+};
+const COLORS = { avail: 0x3b7a2a, blue: 0x3a64c0, sel: 0xf2a93b, off: 0x56555c };
+const seats = [], byId = new Map(), pickables = [];
+let hovered = null;
+
+function addSeat(row, col, rowY, z, type = 'seat') {
+  const num = 20 - col, id = row + num;
+  const g = new THREE.Group(); g.position.set(cx(col), rowY, z); scene.add(g);
+  const mat = new THREE.MeshStandardMaterial({ color: COLORS.avail, roughness: 0.75 });
+  const s = { id, row, num, type, status: 'available', selected: false, group: g, mat, eye: 112, marker: null };
+  if (type === 'wc') {
+    const pad = new THREE.Mesh(GEO.pad, mat); pad.position.set(0, 2, 10); g.add(pad);
+    const icon = new THREE.Mesh(GEO.icon, M.wcIcon); icon.rotation.x = -Math.PI / 2; icon.position.set(0, 4.3, 10); g.add(icon);
+    pad.userData.seat = s; pickables.push(pad);
+    s.eye = 128;
+  } else {
+    const base = new THREE.Mesh(GEO.base, M.seatDark); base.position.y = 17; g.add(base);
+    const cushion = new THREE.Mesh(GEO.cushion, mat); cushion.position.set(0, 41, -2); g.add(cushion);
+    const back = new THREE.Mesh(GEO.back, mat); back.position.set(0, 86, 24); back.rotation.x = 0.14; g.add(back);
+    for (const sx of [-1, 1]) {
+      const arm = new THREE.Mesh(GEO.arm, M.seatDark); arm.position.set(sx * 29, 64, 2); g.add(arm);
+      const post = new THREE.Mesh(GEO.armPost, M.seatDark); post.position.set(sx * 29, 45, 14); g.add(post);
+    }
+    const label = new THREE.Mesh(GEO.label, new THREE.MeshBasicMaterial({ map: labelTex(id), transparent: true }));
+    label.position.set(0, 16, 5.8); back.add(label);
+    cushion.userData.seat = s; back.userData.seat = s;
+    pickables.push(cushion, back);
+  }
+  seats.push(s); byId.set(id, s); paint(s);
+  return s;
+}
+
+// Layout mirrors the 2D seat map: column 0 = G20 (far left facing the screen).
+const ROWS = [
+  { r: 'A', y: 0, z: -420, cols: [4, 19] },
+  { r: 'B', y: 28, z: -310, cols: [4, 19] },
+  { r: 'C', y: 56, z: -200, cols: [4, 19] },
+  { r: 'E', y: 170, z: 110, cols: [2, 17] },
+  { r: 'F', y: 220, z: 220, cols: [2, 17] },
+  { r: 'G', y: 270, z: 330, cols: [0, 18] },
+];
+for (const { r, y, z, cols: [a, b] } of ROWS) for (let c = a; c <= b; c++) addSeat(r, c, y, z);
+const D_ROW = { 4: 'wc', 5: 'wc', 7: 'wc', 8: 'comp', 9: 'seat', 10: 'comp', 11: 'wc', 12: 'comp', 13: 'comp', 14: 'wc', 16: 'wc', 17: 'comp' };
+for (const [c, t] of Object.entries(D_ROW)) addSeat('D', +c, 120, t === 'wc' ? -50 : -40, t);
+for (const id of ['E18', 'E10', 'F11', 'F9']) { const s = byId.get(id); s.status = 'unavailable'; paint(s); }
+
+function paint(s) {
+  let c = s.type === 'seat' ? COLORS.avail : COLORS.blue, e = 0x000000, ei = 1;
+  if (s.status === 'unavailable') c = COLORS.off;
+  else if (s.selected) { c = COLORS.sel; e = 0x8a5200; ei = 0.9; }
+  else if (s === hovered) { e = s.type === 'seat' ? 0x2f6a12 : 0x1d3d9a; ei = 0.8; }
+  s.mat.color.setHex(c); s.mat.emissive.setHex(e); s.mat.emissiveIntensity = ei;
+}
+
+/* ---------- Camera controller (free look from any viewpoint) ---------- */
+const view = { pos: new THREE.Vector3(0, 1000, 600), yaw: 0, pitch: -0.6, fov: 62 };
+let tween = null, autoSpin = false;
+const SCREEN_CENTER = new THREE.Vector3(SCREEN.x, SCREEN.y, SCREEN.z);
+function anglesTo(from, to) {
+  const d = to.clone().sub(from), len = d.length();
+  return { yaw: Math.atan2(-d.x, -d.z), pitch: Math.asin(d.y / len) };
+}
+function wrapAngle(a) { return ((a + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI; }
+function flyTo(pos, target, fov = 62, dur = 1500) {
+  const a = anglesTo(pos, target);
+  tween = { t0: performance.now(), dur, from: { pos: view.pos.clone(), yaw: view.yaw, pitch: view.pitch, fov: view.fov },
+    to: { pos: pos.clone(), yaw: view.yaw + wrapAngle(a.yaw - view.yaw), pitch: a.pitch, fov } };
+}
+const VIEWS = {
+  entrance: () => flyTo(new THREE.Vector3(0, 460, 560), SCREEN_CENTER, 64),
+  overview: () => flyTo(new THREE.Vector3(0, 1020, 600), new THREE.Vector3(0, 40, -240), 60),
+  stage: () => flyTo(new THREE.Vector3(0, 330, -930), new THREE.Vector3(0, 170, 120), 66),
+};
+let currentView = 'entrance';
+function setView(name) {
+  currentView = name; autoSpin = false; VIEWS[name]();
+  document.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === name));
+  document.getElementById('spin').classList.remove('on');
+}
+function sitIn(s) {
+  const p = new THREE.Vector3(); s.group.getWorldPosition(p);
+  p.y += s.eye; p.z += s.type === 'wc' ? 20 : 8;
+  autoSpin = false; document.getElementById('spin').classList.remove('on');
+  flyTo(p, SCREEN_CENTER, 62, 1700);
+  currentView = 'seat:' + s.id;
+  document.querySelectorAll('[data-view]').forEach(b => b.classList.remove('on'));
+  toast(`Viewing from ${s.id} · drag to look around`);
+}
+const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+function updateCamera(now, dt) {
+  if (tween) {
+    const k = Math.min(1, (now - tween.t0) / tween.dur), e = ease(k), f = tween.from, t = tween.to;
+    view.pos.lerpVectors(f.pos, t.pos, e);
+    view.pos.y += Math.sin(Math.PI * e) * Math.min(160, f.pos.distanceTo(t.pos) * 0.12);
+    view.yaw = f.yaw + (t.yaw - f.yaw) * e;
+    view.pitch = f.pitch + (t.pitch - f.pitch) * e;
+    view.fov = f.fov + (t.fov - f.fov) * e;
+    if (k >= 1) tween = null;
+  } else if (autoSpin) view.yaw += dt * 0.25;
+  camera.position.copy(view.pos);
+  const cp = Math.cos(view.pitch);
+  camera.lookAt(view.pos.x - Math.sin(view.yaw) * cp, view.pos.y + Math.sin(view.pitch), view.pos.z - Math.cos(view.yaw) * cp);
+  if (camera.fov !== view.fov) { camera.fov = view.fov; camera.updateProjectionMatrix(); }
+}
+
+/* ---------- Pointer: drag to look, click to select, double-click to sit ---------- */
+const gl = renderer.domElement;
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+let drag = null, hintGone = false;
+const tip = document.getElementById('tip');
+function pick(e) {
+  const r = gl.getBoundingClientRect();
+  ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObjects(pickables, false)[0];
+  return hit ? hit.object.userData.seat : null;
+}
+function setHover(s, e) {
+  if (hovered !== s) { const prev = hovered; hovered = s; if (prev) paint(prev); if (s) paint(s); }
+  gl.classList.toggle('pointing', !!s && s.status !== 'unavailable');
+  if (s && e) {
+    const kind = s.type === 'wc' ? 'Wheelchair space (no seat)' : s.type === 'comp' ? 'Companion seat' : 'Standard seat';
+    const st = s.status === 'unavailable' ? 'Unavailable' : s.selected ? 'Selected · double-click to sit' : `$${PRICE.toFixed(2)} · click to select`;
+    tip.innerHTML = `<b>${s.id}</b> · ${kind}<small>${st}</small>`;
+    tip.style.left = e.clientX + 'px'; tip.style.top = e.clientY + 'px'; tip.hidden = false;
+  } else tip.hidden = true;
+}
+function hideHint() { if (!hintGone) { hintGone = true; document.getElementById('hint').classList.add('gone'); } }
+gl.addEventListener('pointerdown', e => {
+  drag = { x: e.clientX, y: e.clientY, moved: 0, id: e.pointerId };
+  gl.setPointerCapture(e.pointerId);
+});
+gl.addEventListener('pointermove', e => {
+  if (drag && drag.id === e.pointerId) {
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    drag.moved += Math.abs(dx) + Math.abs(dy); drag.x = e.clientX; drag.y = e.clientY;
+    if (drag.moved > 4) {
+      gl.classList.add('dragging'); tween = null; autoSpin = false; document.getElementById('spin').classList.remove('on');
+      const k = 0.0042 * (view.fov / 62);
+      view.yaw += dx * k; view.pitch = THREE.MathUtils.clamp(view.pitch + dy * k, -1.35, 1.35);
+      setHover(null); hideHint();
+    }
+  } else if (e.pointerType === 'mouse') setHover(pick(e), e);
+});
+gl.addEventListener('pointerup', e => {
+  gl.classList.remove('dragging');
+  if (drag && drag.moved <= 4) { const s = pick(e); if (s) toggleSeat(s); }
+  drag = null;
+});
+gl.addEventListener('pointerleave', () => setHover(null));
+gl.addEventListener('dblclick', e => { const s = pick(e); if (s && s.status !== 'unavailable') { if (!s.selected) toggleSeat(s); sitIn(s); } });
+gl.addEventListener('wheel', e => { e.preventDefault(); zoom(e.deltaY > 0 ? 4 : -4); }, { passive: false });
+function zoom(d) { tween = null; view.fov = THREE.MathUtils.clamp(view.fov + d, 28, 85); }
+addEventListener('keydown', e => {
+  if (!document.getElementById('snackModal').hidden || !document.getElementById('buyModal').hidden) {
+    if (e.key === 'Escape') closeModals(); return;
+  }
+  const step = 0.06;
+  if (e.key === 'ArrowLeft') view.yaw += step; else if (e.key === 'ArrowRight') view.yaw -= step;
+  else if (e.key === 'ArrowUp') view.pitch = Math.min(1.35, view.pitch + step);
+  else if (e.key === 'ArrowDown') view.pitch = Math.max(-1.35, view.pitch - step);
+  else if (e.key === '+' || e.key === '=') zoom(-4); else if (e.key === '-') zoom(4);
+  else return;
+  tween = null; autoSpin = false; e.preventDefault();
+});
+
+/* ---------- Selection, hold timer, panel ---------- */
+let holdEnd = 0, snacks = {};
+const SNACKS = [
+  { id: 'popcorn', name: 'Large Buttered Popcorn', note: 'Refillable during the show', price: 9.5 },
+  { id: 'soda', name: 'Fountain Drink', note: 'Large, any flavor', price: 5.25 },
+  { id: 'samosa', name: 'Samosa Bites', note: '6 pieces with tamarind chutney', price: 6.75 },
+  { id: 'nachos', name: 'Loaded Nachos', note: 'Cheese, jalapeños, salsa', price: 7.75 },
+];
+const selected = () => seats.filter(s => s.selected);
+function toggleSeat(s) {
+  if (s.status === 'unavailable') { toast(`${s.id} is already taken`); return; }
+  if (!s.selected && selected().length >= MAX_SEATS) { toast(`You can select up to ${MAX_SEATS} seats`); return; }
+  s.selected = !s.selected;
+  if (s.selected) {
+    s.marker = new THREE.Mesh(GEO.marker, M.marker); s.marker.position.y = s.type === 'wc' ? 60 : 140; s.group.add(s.marker);
+    if (!holdEnd) holdEnd = Date.now() + HOLD_MS;
+  } else if (s.marker) { s.group.remove(s.marker); s.marker = null; }
+  if (!selected().length) { holdEnd = 0; snacks = {}; }
+  paint(s); hideHint(); renderPanel();
+}
+const money = n => '$' + n.toFixed(2);
+function snackTotal() { return SNACKS.reduce((t, x) => t + (snacks[x.id] || 0) * x.price, 0); }
+function renderPanel() {
+  const sel = selected().sort((a, b) => a.row.localeCompare(b.row) || b.num - a.num);
+  const body = document.getElementById('ticketBody');
+  document.getElementById('buyBtn').disabled = !sel.length;
+  document.getElementById('snackBtn').disabled = !sel.length;
+  const sitBtn = document.getElementById('vSit');
+  sitBtn.disabled = !sel.length;
+  document.getElementById('sitLabel').textContent = sel.length ? `Sit in ${sel[0].id}` : 'Sit in your seat';
+  if (!sel.length) { body.innerHTML = `<div class="empty">Select your seats<br>to see ticket options.</div>`; return; }
+  const tickets = sel.length * PRICE, sn = snackTotal();
+  const snackRows = SNACKS.filter(x => snacks[x.id]).map(x => `<div><span>${x.name} × ${snacks[x.id]}</span><span>${money(x.price * snacks[x.id])}</span></div>`).join('');
+  body.innerHTML = `
+    <div class="chips">${sel.map(s => `<span class="chip">${s.id}${s.type !== 'seat' ? (s.type === 'wc' ? ' ♿' : ' ·C') : ''}
+      <button data-sit="${s.id}" aria-label="View from ${s.id}" title="View from ${s.id}">👁</button>
+      <button data-remove="${s.id}" aria-label="Remove ${s.id}" title="Remove">✕</button></span>`).join('')}</div>
+    <div class="rows">
+      <div><span>General admission × ${sel.length}</span><span>${money(tickets)}</span></div>
+      ${snackRows}
+      <div class="total"><span>Total</span><span>${money(tickets + sn)}</span></div>
+    </div>
+    <div class="hold" id="hold"><span>Seats held for</span><b id="holdTime">5:00</b></div>`;
+  tickHold();
+}
+document.getElementById('ticketBody').addEventListener('click', e => {
+  const sit = e.target.closest('[data-sit]'), rm = e.target.closest('[data-remove]');
+  if (sit) sitIn(byId.get(sit.dataset.sit));
+  if (rm) toggleSeat(byId.get(rm.dataset.remove));
+});
+function tickHold() {
+  if (!holdEnd) return;
+  const left = holdEnd - Date.now();
+  if (left <= 0) {
+    selected().forEach(s => toggleSeat(s));
+    toast('Your hold expired, so the seats were released');
+    return;
+  }
+  const el = document.getElementById('holdTime'); if (!el) return;
+  const m = Math.floor(left / 60000), sec = Math.floor(left / 1000) % 60;
+  el.textContent = `${m}:${String(sec).padStart(2, '0')}`;
+  document.getElementById('hold').classList.toggle('warn', left < 60000);
+}
+setInterval(tickHold, 1000);
+
+/* ---------- Modals ---------- */
+const snackModal = document.getElementById('snackModal'), buyModal = document.getElementById('buyModal');
+function closeModals() { snackModal.hidden = true; buyModal.hidden = true; }
+function renderSnacks() {
+  document.getElementById('snackList').innerHTML = SNACKS.map(x => `
+    <div class="snack"><b>${x.name} · ${money(x.price)}</b><small>${x.note}</small>
+      <div class="qty"><button data-snack="${x.id}" data-d="-1" aria-label="Fewer ${x.name}">−</button><span>${snacks[x.id] || 0}</span><button data-snack="${x.id}" data-d="1" aria-label="More ${x.name}">+</button></div></div>`).join('');
+}
+document.getElementById('snackList').addEventListener('click', e => {
+  const b = e.target.closest('[data-snack]'); if (!b) return;
+  snacks[b.dataset.snack] = Math.max(0, Math.min(9, (snacks[b.dataset.snack] || 0) + +b.dataset.d));
+  renderSnacks();
+});
+document.getElementById('snackBtn').onclick = () => { renderSnacks(); snackModal.hidden = false; };
+document.getElementById('snackDone').onclick = () => { closeModals(); renderPanel(); };
+document.getElementById('buyBtn').onclick = () => {
+  const sel = selected(), total = sel.length * PRICE + snackTotal();
+  const snackLine = SNACKS.filter(x => snacks[x.id]).map(x => `${x.name} × ${snacks[x.id]}`).join(', ');
+  document.getElementById('stub').innerHTML = `
+    <div><span>Movie</span><b>Ramayana</b></div>
+    <div><span>Showtime</span><b>Tonight · 7:30 PM</b></div>
+    <div><span>Auditorium</span><b>3</b></div>
+    <div><span>Seats</span><b>${sel.map(s => s.id).join(', ')}</b></div>
+    ${snackLine ? `<div><span>Snacks</span><b>${snackLine}</b></div>` : ''}
+    <div><span>Total paid</span><b>${money(total)}</b></div>`;
+  document.getElementById('bookCode').textContent = 'RMY-' + Math.random().toString(36).slice(2, 8).toUpperCase();
+  buyModal.hidden = false;
+};
+document.getElementById('buyDone').onclick = () => {
+  selected().forEach(s => { toggleSeat(s); s.status = 'unavailable'; paint(s); });
+  closeModals(); toast('Enjoy the show');
+};
+[snackModal, buyModal].forEach(m => m.addEventListener('click', e => { if (e.target === m) closeModals(); }));
+
+/* ---------- Dock ---------- */
+document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => setView(b.dataset.view));
+document.getElementById('vSit').onclick = () => { const s = selected().sort((a, b) => a.row.localeCompare(b.row) || b.num - a.num)[0]; if (s) sitIn(s); };
+document.getElementById('zoomIn').onclick = () => zoom(-6);
+document.getElementById('zoomOut').onclick = () => zoom(6);
+document.getElementById('spin').onclick = (e) => { autoSpin = !autoSpin; tween = null; e.currentTarget.classList.toggle('on', autoSpin); };
+let muted = true;
+document.getElementById('soundBtn').onclick = (e) => {
+  muted = !muted;
+  ytCommand(muted ? 'mute' : 'unMute'); if (!muted) { ytCommand('setVolume', [80]); ytCommand('playVideo'); }
+  e.currentTarget.classList.toggle('on', !muted);
+  e.currentTarget.innerHTML = muted ? '🔇 <span class="label">Unmute trailer</span>' : '🔊 <span class="label">Mute trailer</span>';
+};
+const legendBox = document.getElementById('legendBox');
+document.getElementById('legendToggle').onclick = (e) => {
+  legendBox.hidden = !legendBox.hidden;
+  e.currentTarget.textContent = legendBox.hidden ? 'Show' : 'Hide';
+  e.currentTarget.setAttribute('aria-expanded', String(!legendBox.hidden));
+};
+if (matchMedia('(max-width: 760px)').matches) { legendBox.hidden = true; document.getElementById('legendToggle').textContent = 'Show'; }
+
+let toastTimer;
+function toast(msg) {
+  const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2400);
+}
+
+/* ---------- Resize + loop ---------- */
+function resize() {
+  camera.aspect = W() / H(); camera.updateProjectionMatrix();
+  renderer.setSize(W(), H()); cssRenderer.setSize(W(), H());
+}
+addEventListener('resize', resize);
+
+const warm = new THREE.Color(0xffc27a), cool = new THREE.Color(0xa9c4ff), tmp = new THREE.Color();
+let last = performance.now();
+renderer.setAnimationLoop(now => {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  updateCamera(now, dt);
+  // Screen spill shifts between warm and cool, with a slight flicker, like a trailer's changing shots
+  const t = now / 1000;
+  tmp.copy(cool).lerp(warm, 0.5 + 0.5 * Math.sin(t * 0.37) * Math.sin(t * 0.13 + 1));
+  screenLight.color.copy(tmp);
+  screenLight.intensity = 5 + Math.sin(t * 2.3) * 0.6 + Math.sin(t * 7.1) * 0.35;
+  for (const s of seats) if (s.marker) { s.marker.rotation.y += dt * 1.6; s.marker.position.y = (s.type === 'wc' ? 60 : 140) + Math.sin(t * 2.4) * 6; }
+  renderer.render(scene, camera);
+  cssRenderer.render(scene, camera);
+});
+
+renderPanel();
+setTimeout(() => setView('entrance'), 400);
+</script>
+</body>
+</html>
