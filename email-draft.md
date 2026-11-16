@@ -4,7 +4,7 @@ Hi [Theater name] team,
 
 I'm Vamshi, a Dallas-area founder. I built Seatscape, a 3D seat picker that lets moviegoers see the screen from any seat before they buy, with the trailer playing on the screen.
 
-Try the demo here (drag to look around, double-click a seat to sit in it): [DEMO LINK]
+Try the demo here (drag to look around, double-click a seat to sit in it): https://kaishetty.github.io/seatscape-demo/
 
 I'd like to build one for [Theater name]'s auditorium for free. In return I'm asking for honest feedback and permission to show it as an example. It works alongside your current ticketing; nothing changes in how you sell tickets.
 
